@@ -1,0 +1,58 @@
+# Production-shaped stack: Postgres + the WSFS IPAM API.
+# Local Windows dev instead uses the portable PostgreSQL in .pgdev/ (port 5433) with
+# `uvicorn app.main:app` — see backend/README.md. This compose is the deploy target.
+#
+#   docker compose up --build            # simulated prober/collector, seeds on first run
+#   docker compose up --build -d         # detached
+#
+# For real network probing / ARP collection, build with the extras and grant CAP_NET_RAW
+# (see the commented lines in the api service).
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: wsfs_ipam
+      POSTGRES_USER: wsfs_ipam
+      POSTGRES_PASSWORD: wsfs_ipam
+    ports:
+      - "5433:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U wsfs_ipam"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  api:
+    build:
+      context: ./backend
+      args:
+        # Real probing/ARP: set to "probe,collect". Empty keeps the image lean and
+        # runs the simulated backends (no network privileges required).
+        EXTRAS: ""
+    environment:
+      WSFS_DATABASE_URL: postgresql+asyncpg://wsfs_ipam:wsfs_ipam@postgres:5432/wsfs_ipam
+      WSFS_LOG_JSON: "true"
+      WSFS_CORS_ORIGINS: '["http://localhost:5173","http://localhost:3000"]'
+      # Seed demo data on first boot so the API has something to serve. Set false once
+      # you have real data — it TRUNCATEs before seeding.
+      WSFS_SEED_ON_START: "true"
+      # --- Real network mode (requires EXTRAS=probe,collect above) ---
+      # WSFS_PROBER: "real"
+      # WSFS_ARP_COLLECTOR: "nxapi"
+      # WSFS_ARP_COLLECT_ENABLED: "true"
+      # WSFS_SNMP_COMMUNITY: "your-ro-community"
+      # NXOS_CORE_USER / NXOS_CORE_PASS: device credentials (see credential_ref)
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    # Real ICMP probing needs raw sockets:
+    # cap_add:
+    #   - NET_RAW
+    restart: unless-stopped
+
+volumes:
+  pgdata:
